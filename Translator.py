@@ -1,75 +1,89 @@
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-import PyPDF2
+from transformers import MarianMTModel, MarianTokenizer, pipeline
+from PyPDF2 import PdfReader
 
-# Load the SeamlessM4T model
-model_name = "meta/seamlessm4t"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+# Load translation model
+@st.cache_resource
+def load_translation_model():
+    model_name = "Helsinki-NLP/opus-mt-en-fr"  # English to French
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    model = MarianMTModel.from_pretrained(model_name)
+    return tokenizer, model
 
-# Load additional pipelines
-summarizer = pipeline("summarization")
-sentiment_analyzer = pipeline("sentiment-analysis")
+# Load sentiment analysis and summarization pipelines
+@st.cache_resource
+def load_sentiment_pipeline():
+    return pipeline("sentiment-analysis")
 
-# App Header
+@st.cache_resource
+def load_summarization_pipeline():
+    return pipeline("summarization")
+
+# Translation function
+def translate_text(input_text, tokenizer, model):
+    tokens = tokenizer.prepare_seq2seq_batch([input_text], return_tensors="pt")
+    translated = model.generate(**tokens)
+    return tokenizer.decode(translated[0], skip_special_tokens=True)
+
+# Extract text from PDF
+def extract_text_from_pdf(pdf_file):
+    pdf_reader = PdfReader(pdf_file)
+    text = ""
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
+
+# Streamlit app layout
 st.title("🌍 Multilingual Translator App")
-st.subheader("Powered by Meta's SeamlessM4T")
+st.sidebar.title("Features")
 
-# Sidebar Features
-st.sidebar.title("App Features")
-enable_summarization = st.sidebar.checkbox("Enable Summarization")
-enable_sentiment_analysis = st.sidebar.checkbox("Enable Sentiment Analysis")
-file_upload_enabled = st.sidebar.checkbox("Enable File Uploads")
+# Load models
+tokenizer, model = load_translation_model()
+sentiment_pipeline = load_sentiment_pipeline()
+summarization_pipeline = load_summarization_pipeline()
 
-# Language Selection
-target_language = st.selectbox(
-    "Select Target Language", ["English", "French", "Spanish", "German"]
-)
-lang_map = {"English": "en", "French": "fr", "Spanish": "es", "German": "de"}
+# Sidebar navigation
+feature = st.sidebar.radio("Select a feature:", ["Text Translation", "Sentiment Analysis", "Text Summarization", "PDF Translation"])
 
-# Input Section
-source_text = st.text_area("Enter Text to Translate", placeholder="Type here...")
+if feature == "Text Translation":
+    st.header("📜 Text Translation")
+    input_text = st.text_area("Enter text to translate (English to French):")
+    if st.button("Translate"):
+        if input_text:
+            translated_text = translate_text(input_text, tokenizer, model)
+            st.success(f"Translated Text: {translated_text}")
+        else:
+            st.warning("Please enter text to translate.")
 
-# File Upload (Optional)
-uploaded_file = None
-if file_upload_enabled:
-    uploaded_file = st.file_uploader("Upload a text or PDF file", type=["txt", "pdf"])
+elif feature == "Sentiment Analysis":
+    st.header("😊 Sentiment Analysis")
+    input_text = st.text_area("Enter text to analyze sentiment:")
+    if st.button("Analyze Sentiment"):
+        if input_text:
+            sentiment_result = sentiment_pipeline(input_text)
+            st.json(sentiment_result)
+        else:
+            st.warning("Please enter text to analyze sentiment.")
 
+elif feature == "Text Summarization":
+    st.header("📝 Text Summarization")
+    input_text = st.text_area("Enter text to summarize:")
+    if st.button("Summarize"):
+        if input_text:
+            summary = summarization_pipeline(input_text, max_length=130, min_length=30, do_sample=False)
+            st.success(f"Summary: {summary[0]['summary_text']}")
+        else:
+            st.warning("Please enter text to summarize.")
+
+elif feature == "PDF Translation":
+    st.header("📄 PDF Translation")
+    uploaded_file = st.file_uploader("Upload a PDF file:", type=["pdf"])
     if uploaded_file:
-        if uploaded_file.name.endswith(".txt"):
-            source_text = uploaded_file.read().decode("utf-8")
-        elif uploaded_file.name.endswith(".pdf"):
-            pdf_reader = PyPDF2.PdfReader(uploaded_file)
-            source_text = " ".join([page.extract_text() for page in pdf_reader.pages])
-
-# Translation Button
-if st.button("Translate"):
-    if source_text.strip():
-        # Translate the text
-        inputs = tokenizer(source_text, return_tensors="pt", padding=True, truncation=True)
-        outputs = model.generate(
-            **inputs,
-            forced_bos_token_id=tokenizer.lang_code_to_id[lang_map[target_language]]
-        )
-        translated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        st.success("Translation:")
-        st.write(translated_text)
-
-        # Summarization
-        if enable_summarization:
-            summary = summarizer(translated_text, max_length=50, min_length=25, do_sample=False)
-            st.info("Summary:")
-            st.write(summary[0]['summary_text'])
-
-        # Sentiment Analysis
-        if enable_sentiment_analysis:
-            sentiment = sentiment_analyzer(translated_text)
-            st.info("Sentiment Analysis:")
-            st.write(f"Sentiment: {sentiment[0]['label']}, Score: {sentiment[0]['score']:.2f}")
-
-    else:
-        st.warning("Please enter text or upload a file to translate.")
-
-# Footer
-st.caption("Built with ❤️ using Streamlit and SeamlessM4T.")
+        text = extract_text_from_pdf(uploaded_file)
+        st.text_area("Extracted Text:", text, height=300)
+        if st.button("Translate PDF to French"):
+            if text:
+                translated_text = translate_text(text, tokenizer, model)
+                st.success(f"Translated PDF Text: {translated_text}")
+            else:
+                st.warning("No text found in the uploaded PDF.")
